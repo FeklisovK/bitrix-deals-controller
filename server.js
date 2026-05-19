@@ -1,86 +1,136 @@
-// Подключаем необходимые модули
+// ============================================
+// Bitrix24 Deals Controller
+// Версия: 1.1 (с подробным логированием)
+// ============================================
+
+console.log('🚀 [START] Запуск приложения...');
+console.log('🚀 [START] NODE_ENV:', process.env.NODE_ENV);
+console.log('🚀 [START] PORT:', process.env.PORT || 3000);
+
 const express = require('express');
 const bodyParser = require('body-parser');
 
-// Инициализируем приложение
-const app = express();
+console.log('✅ [MODULES] Express и body-parser загружены');
 
-// Порт из переменной окружения или 3000 по умолчанию
+const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware для парсинга входящих данных (JSON и формы)
+// Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// 🗺️ Карта соответствия ID воронок и их названий
-// ВАЖНО: Замените '1' и '2' на реальные ID ваших воронок из Битрикс24.
-// Узнать ID можно: открыть воронку в CRM -> посмотреть в URL (параметр CATEGORY_ID) 
-// или через метод API: crm.dealcategory.list
+console.log('✅ [MIDDLEWARE] JSON и URL-encoded парсеры подключены');
+
+// Карта воронок
 const PIPELINE_MAP = {
-  '1': 'Группы',       // Замените 1 на ваш реальный ID
-  '2': 'Мероприятия'   // Замените 2 на ваш реальный ID
+  '1': 'Группы',
+  '2': 'Мероприятия'
 };
+
+console.log('✅ [CONFIG] PIPELINE_MAP настроен:', JSON.stringify(PIPELINE_MAP));
+
+// 📡 Корневой маршрут (тест)
+app.get('/', (req, res) => {
+  console.log('📡 [GET /] Тестовый запрос получен');
+  res.json({ 
+    status: 'ok', 
+    message: 'Bitrix24 Deals Controller is running!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 📡 Health check
+app.get('/health', (req, res) => {
+  console.log('💚 [GET /health] Health check запрошен');
+  res.json({ 
+    status: 'healthy',
+    uptime: process.uptime(),
+    memory: process.memoryUsage().heapUsed / 1024 / 1024 + ' MB'
+  });
+});
 
 // 📡 Обработчик вебхуков
 app.post('/webhook', (req, res) => {
+  console.log('📥 [WEBHOOK] Получен POST запрос на /webhook');
+  console.log('📥 [WEBHOOK] Headers:', JSON.stringify(req.headers));
+  console.log('📥 [WEBHOOK] Body:', JSON.stringify(req.body, null, 2));
+  
   try {
-    // 1. Базовая валидация входящих данных
+    // Валидация
     if (!req.body || typeof req.body !== 'object') {
-      console.error('❌ Ошибка: Пришёл пустой или некорректный запрос');
+      console.warn('⚠️ [WEBHOOK] Пустое или некорректное тело запроса');
       return res.status(400).json({ error: 'Invalid request body' });
     }
 
-    // 2. Логируем сырые данные от Битрикс24
-    console.log('📥 Получен вебхук от Битрикс24:');
-    console.log(JSON.stringify(req.body, null, 2));
-
-    // 3. Извлекаем нужные поля
-    // Битрикс обычно присылает данные в req.body.fields, но иногда напрямую в req.body
+    // Извлечение данных
     const fields = req.body.fields || req.body;
-    
     const categoryId = String(fields.CATEGORY_ID || '').trim();
     const dealId = fields.ID || req.body.id || 'unknown';
     
-    // Пример чтения кастомного поля (замените UF_CRM_* на ваше реальное название поля)
-    const customField = fields.UF_CRM_CUSTOM_EXAMPLE || req.body.UF_CRM_CUSTOM_EXAMPLE;
+    console.log('🔍 [WEBHOOK] Сделка ID:', dealId);
+    console.log('🔍 [WEBHOOK] Воронка ID:', categoryId);
 
-    // Проверка наличия обязательного поля CATEGORY_ID
+    // Проверка CATEGORY_ID
     if (!categoryId) {
-      console.warn('⚠️ Предупреждение: В запросе отсутствует CATEGORY_ID. Пропускаем логику.');
+      console.warn('⚠️ [WEBHOOK] CATEGORY_ID отсутствует');
       return res.status(200).json({ status: 'ok', message: 'CATEGORY_ID missing' });
     }
 
-    console.log(`🔍 Сделка ID: ${dealId} | Воронка ID: ${categoryId}`);
-
-    // 4. Определяем тип сделки и выполняем логику
-    if (PIPELINE_MAP[categoryId] === 'Группы') {
-      console.log('📦 Обработка Группы');
-      // Здесь можно добавить вызов API Битрикса, запись в БД и т.д.
-    } else if (PIPELINE_MAP[categoryId] === 'Мероприятия') {
-      console.log('🎉 Обработка Мероприятия');
-      // Логика для мероприятий
+    // Определение типа сделки
+    const pipelineName = PIPELINE_MAP[categoryId];
+    
+    if (pipelineName === 'Группы') {
+      console.log('📦 [PIPELINE] Обработка Группы');
+      // TODO: Добавить логику для групп
+    } else if (pipelineName === 'Мероприятия') {
+      console.log('🎉 [PIPELINE] Обработка Мероприятия');
+      // TODO: Добавить логику для мероприятий
     } else {
-      console.log(`📋 Сделка из другой воронки (ID: ${categoryId})`);
+      console.log('📋 [PIPELINE] Неизвестная воронка ID:', categoryId);
     }
 
-    // 5. Успешный ответ Битриксу (обязательно 200, иначе Битрикс будет слать повторные запросы)
-    res.status(200).json({ status: 'success', message: 'Webhook processed successfully' });
+    // Успешный ответ
+    console.log('✅ [WEBHOOK] Обработка завершена успешно');
+    res.status(200).json({ 
+      status: 'success', 
+      message: 'Webhook processed successfully',
+      dealId: dealId,
+      pipeline: pipelineName || 'unknown'
+    });
 
   } catch (error) {
-    // Graceful обработка ошибок
-    console.error('💥 Произошла ошибка при обработке вебхука:', error.message);
-    res.status(500).json({ status: 'error', message: 'Internal server error' });
+    console.error('💥 [WEBHOOK] Ошибка обработки:', error.message);
+    console.error('💥 [WEBHOOK] Stack:', error.stack);
+    res.status(500).json({ 
+      status: 'error', 
+      message: 'Internal server error',
+      error: error.message 
+    });
   }
 });
 
 // 🚀 Запуск сервера
+console.log('🚀 [SERVER] Запуск сервера на порту', PORT);
+
 app.listen(PORT, () => {
-  console.log(`✅ Сервер запущен на порту ${PORT}`);
-  console.log(`🌐 Ожидание вебхуков на: http://localhost:${PORT}/webhook`);
+  console.log('✅ [SERVER] Сервер успешно запущен!');
+  console.log('✅ [SERVER] Порт:', PORT);
+  console.log('✅ [SERVER] Webhook endpoint: http://localhost:' + PORT + '/webhook');
+  console.log('✅ [SERVER] Health check: http://localhost:' + PORT + '/health');
+  console.log('✅ [SERVER] Готов к приему запросов!');
 });
 
-// Глобальная обработка необработанных ошибок (защита от падения процесса)
+// 🛡️ Глобальная обработка ошибок
 process.on('uncaughtException', (err) => {
-  console.error('💥 Uncaught Exception:', err);
+  console.error('💥 [FATAL] Uncaught Exception:', err.message);
+  console.error('💥 [FATAL] Stack:', err.stack);
   process.exit(1);
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 [FATAL] Unhandled Rejection at:', promise);
+  console.error('💥 [FATAL] Reason:', reason);
+  process.exit(1);
+});
+
+console.log('✅ [INIT] Все обработчики ошибок подключены');
