@@ -21,7 +21,26 @@ if (!BOT_TOKEN || !QWEN_KEY || !B24_WEBHOOK) {
   console.error('❌ [FATAL] Отсутствуют необходимые переменные окружения');
   process.exit(1);
 }
+// ============================================
+// 🏥 Health Check Endpoints (для VibeCode)
+// ============================================
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'Vega CRM Analytics Bot',
+    bot: '@Vega_CRM_Analytics_bot',
+    timestamp: new Date().toISOString()
+  });
+});
 
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    healthy: true,
+    uptime: process.uptime(),
+    memory: (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2) + ' MB'
+  });
+});
+// ============================================
 // 🤖 Инициализация бота
 const bot = new Telegraf(BOT_TOKEN);
 
