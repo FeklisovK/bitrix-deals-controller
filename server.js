@@ -1,136 +1,144 @@
 // ============================================
-// Bitrix24 Deals Controller
-// Версия: 1.1 (с подробным логированием)
+// Vega CRM Analytics Bot v2.0
+// AI Assistant for Hotel Business Analytics
+// Bot: @Vega_CRM_Analytics_bot
 // ============================================
-
-console.log('🚀 [START] Запуск приложения...');
-console.log('🚀 [START] NODE_ENV:', process.env.NODE_ENV);
-console.log('🚀 [START] PORT:', process.env.PORT || 3000);
+console.log('🚀 [INIT] Запуск Vega CRM Analytics Bot...');
 
 const express = require('express');
-const bodyParser = require('body-parser');
-
-console.log('✅ [MODULES] Express и body-parser загружены');
+const { Telegraf } = require('telegraf');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// 🔑 Конфигурация
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const QWEN_KEY = process.env.QWEN_API_KEY;
+const B24_WEBHOOK = process.env.B24_WEBHOOK_URL;
 
-console.log('✅ [MIDDLEWARE] JSON и URL-encoded парсеры подключены');
+if (!BOT_TOKEN || !QWEN_KEY || !B24_WEBHOOK) {
+  console.error('❌ [FATAL] Отсутствуют необходимые переменные окружения');
+  process.exit(1);
+}
 
-// Карта воронок
-const PIPELINE_MAP = {
-  '1': 'Группы',
-  '2': 'Мероприятия'
-};
+// 🤖 Инициализация бота
+const bot = new Telegraf(BOT_TOKEN);
 
-console.log('✅ [CONFIG] PIPELINE_MAP настроен:', JSON.stringify(PIPELINE_MAP));
-
-// 📡 Корневой маршрут (тест)
-app.get('/', (req, res) => {
-  console.log('📡 [GET /] Тестовый запрос получен');
-  res.json({ 
-    status: 'ok', 
-    message: 'Bitrix24 Deals Controller is running!',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// 📡 Health check
-app.get('/health', (req, res) => {
-  console.log('💚 [GET /health] Health check запрошен');
-  res.json({ 
-    status: 'healthy',
-    uptime: process.uptime(),
-    memory: process.memoryUsage().heapUsed / 1024 / 1024 + ' MB'
-  });
-});
-
-// 📡 Обработчик вебхуков
-app.post('/webhook', (req, res) => {
-  console.log('📥 [WEBHOOK] Получен POST запрос на /webhook');
-  console.log('📥 [WEBHOOK] Headers:', JSON.stringify(req.headers));
-  console.log('📥 [WEBHOOK] Body:', JSON.stringify(req.body, null, 2));
-  
+// ============================================
+// 📥 Получение данных из Битрикс24
+// ============================================
+async function fetchCRMData() {
   try {
-    // Валидация
-    if (!req.body || typeof req.body !== 'object') {
-      console.warn('⚠️ [WEBHOOK] Пустое или некорректное тело запроса');
-      return res.status(400).json({ error: 'Invalid request body' });
-    }
-
-    // Извлечение данных
-    const fields = req.body.fields || req.body;
-    const categoryId = String(fields.CATEGORY_ID || '').trim();
-    const dealId = fields.ID || req.body.id || 'unknown';
+    const url = `${B24_WEBHOOK}crm.deal.list.json`;
+    const payload = {
+      order: { DATE_CREATE: "DESC" },
+      filter: {},
+      select: [
+        "ID", "TITLE", "OPPORTUNITY", "STAGE_ID", 
+        "CATEGORY_ID", "ASSIGNED_BY_ID", "DATE_CREATE", 
+        "SOURCE_ID", "BEGINDATE", "CLOSED"
+      ],
+      start: 0
+    };
     
-    console.log('🔍 [WEBHOOK] Сделка ID:', dealId);
-    console.log('🔍 [WEBHOOK] Воронка ID:', categoryId);
-
-    // Проверка CATEGORY_ID
-    if (!categoryId) {
-      console.warn('⚠️ [WEBHOOK] CATEGORY_ID отсутствует');
-      return res.status(200).json({ status: 'ok', message: 'CATEGORY_ID missing' });
-    }
-
-    // Определение типа сделки
-    const pipelineName = PIPELINE_MAP[categoryId];
-    
-    if (pipelineName === 'Группы') {
-      console.log('📦 [PIPELINE] Обработка Группы');
-      // TODO: Добавить логику для групп
-    } else if (pipelineName === 'Мероприятия') {
-      console.log('🎉 [PIPELINE] Обработка Мероприятия');
-      // TODO: Добавить логику для мероприятий
-    } else {
-      console.log('📋 [PIPELINE] Неизвестная воронка ID:', categoryId);
-    }
-
-    // Успешный ответ
-    console.log('✅ [WEBHOOK] Обработка завершена успешно');
-    res.status(200).json({ 
-      status: 'success', 
-      message: 'Webhook processed successfully',
-      dealId: dealId,
-      pipeline: pipelineName || 'unknown'
-    });
-
-  } catch (error) {
-    console.error('💥 [WEBHOOK] Ошибка обработки:', error.message);
-    console.error('💥 [WEBHOOK] Stack:', error.stack);
-    res.status(500).json({ 
-      status: 'error', 
-      message: 'Internal server error',
-      error: error.message 
-    });
+    const response = await axios.post(url, payload);
+    return response.data.result || [];
+  } catch (err) {
+    console.error('💥 [B24 API] Ошибка:', err.response?.data || err.message);
+    return [];
   }
+}
+
+// ============================================
+// 🧠 Запрос к Qwen AI
+// ============================================
+async function askAI(userQuestion, crmData) {
+  const systemPrompt = `Ты — профессиональный AI-аналитик CRM для отельного бизнеса Vega.
+Твоя задача: анализировать сделки из CRM и отвечать на вопросы владельца бизнеса.
+
+Правила:
+1. Отвечай четко, структурированно, на русском языке
+2. Используй только предоставленные данные
+3. Если данных недостаточно — честно скажи об этом
+4. Форматируй ответ с эмодзи и списками для Telegram
+5. Делай акцент на метриках: количество сделок, суммы, конверсия, менеджеры`;
+
+  const contextStr = JSON.stringify(crmData).substring(0, 15000);
+  const userPrompt = `Вопрос: "${userQuestion}"\n\nДанные из CRM (последние 50 сделок):\n${contextStr}`;
+
+  try {
+    const response = await axios.post(
+      'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
+      {
+        model: 'qwen-plus',
+        input: {
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${QWEN_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data.output.text;
+  } catch (err) {
+    console.error('💥 [Qwen AI] Ошибка:', err.message);
+    return '❌ Произошла ошибка при подключении к AI. Попробуйте позже.';
+  }
+}
+
+// ============================================
+//  Обработчики Telegram
+// ============================================
+bot.start((ctx) => ctx.reply(
+  '*👋 Привет! Я AI-аналитик Vega CRM*\n\n' +
+  'Я работаю с данными из вашей CRM в реальном времени.\n\n' +
+  '📊 *Примеры вопросов:*\n' +
+  '• "Какая воронка приносит больше денег?"\n' +
+  '• "Топ-3 менеджера по сумме сделок"\n' +
+  '• "Сколько новых сделок за сегодня?"\n' +
+  '• "Какие источники лидов самые эффективные?"\n' +
+  '• "Покажи общую статистику по сделкам"',
+  { parse_mode: 'Markdown' }
+));
+
+bot.on('text', async (ctx) => {
+  const query = ctx.message.text.trim();
+  console.log(` [TG] ${ctx.from.first_name}: "${query}"`);
+  
+  await ctx.reply('⏳ Загружаю свежие данные из CRM и анализирую через Qwen AI...');
+  
+  // 1. Забираем данные из Битрикс24
+  const deals = await fetchCRMData();
+  
+  if (deals.length === 0) {
+    return ctx.reply('⚠️ Не удалось получить данные из CRM или в системе пока нет сделок.');
+  }
+  
+  // 2. Отправляем данные + вопрос в Qwen
+  const aiAnswer = await askAI(query, deals);
+  
+  // 3. Отдаем ответ пользователю
+  await ctx.reply(aiAnswer);
+  console.log('✅ [AI] Ответ отправлен');
 });
 
-// 🚀 Запуск сервера
-console.log('🚀 [SERVER] Запуск сервера на порту', PORT);
-
+// Запуск
+bot.launch();
 app.listen(PORT, () => {
-  console.log('✅ [SERVER] Сервер успешно запущен!');
-  console.log('✅ [SERVER] Порт:', PORT);
-  console.log('✅ [SERVER] Webhook endpoint: http://localhost:' + PORT + '/webhook');
-  console.log('✅ [SERVER] Health check: http://localhost:' + PORT + '/health');
-  console.log('✅ [SERVER] Готов к приему запросов!');
+  console.log(`✅ [SERVER] Vega CRM Analytics Bot запущен на порту ${PORT}`);
+  console.log(`🤖 Telegram: @Vega_CRM_Analytics_bot`);
+  console.log(` CRM: ${B24_WEBHOOK}`);
 });
 
-// 🛡️ Глобальная обработка ошибок
+// Защита от крашей
 process.on('uncaughtException', (err) => {
-  console.error('💥 [FATAL] Uncaught Exception:', err.message);
-  console.error('💥 [FATAL] Stack:', err.stack);
+  console.error('💥 [FATAL]', err);
   process.exit(1);
 });
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('💥 [FATAL] Unhandled Rejection at:', promise);
-  console.error('💥 [FATAL] Reason:', reason);
-  process.exit(1);
-});
-
-console.log('✅ [INIT] Все обработчики ошибок подключены');
