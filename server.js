@@ -84,13 +84,55 @@ async function loadColdData(years = ['2021','2022','2023','2024','2025']) {
 // ============================================
 function routeQuery(query) {
   const q = query.toLowerCase();
-  if (q.match(/сегодня|вчера|недел|3 дня|последн.*день/)) return { layer: 'hot', days: 7 };
-  if (q.match(/месяц|квартал|2024|2025|сравн.*год|полгода/)) return { layer: 'warm' };
-  if (q.match(/тренд|динамика|2021|2022|2023|история|5 лет|год-к-году/)) return { layer: 'cold' };
-  if (q.match(/все данные|полный анализ|максимум/)) return { layer: 'all' };
-  return { layer: 'hot', days: 30 }; // По умолчанию
+  
+  // 🔍 Извлекаем год из запроса (2021, 2022, 2023, 2024, 2025)
+  const yearMatch = q.match(/(2021|2022|2023|2024|2025)/);
+  const year = yearMatch ? yearMatch[1] : null;
+  
+  // 🔍 Извлекаем месяц (январь, февраль... июль и т.д.)
+  const monthMatch = q.match(/(январ[яь]|феврал[яь]|март[ае]?|апрел[яь]|ма[яй]|июн[яь]|июл[яь]|август[ае]?|сентябр[яь]|октябр[яь]|ноябр[яь]|декабр[яь])/);
+  
+  // 📅 Если указан конкретный месяц и год (например, "июль 2025")
+  if (monthMatch && year) {
+    if (['2024', '2025'].includes(year)) {
+      return { layer: 'warm', year, month: monthMatch[1] };
+    } else if (['2021', '2022', '2023'].includes(year)) {
+      return { layer: 'cold', year, month: monthMatch[1] };
+    }
+  }
+  
+  // 📅 Если указан только год
+  if (year) {
+    if (['2024', '2025'].includes(year)) {
+      return { layer: 'warm', year };
+    } else if (['2021', '2022', '2023'].includes(year)) {
+      return { layer: 'cold', year };
+    }
+  }
+  
+  // 🔥 HOT: последние дни/недели
+  if (q.match(/сегодня|вчера|недел|3 дня|последн.*день|72 часа/)) {
+    return { layer: 'hot', days: 7 };
+  }
+  
+  // 🌤 WARM: месяцы/кварталы без указания года (подразумеваем 2024-2025)
+  if (q.match(/месяц|квартал|полгода/)) {
+    return { layer: 'warm' };
+  }
+  
+  // ❄️ COLD: долгосрочные тренды
+  if (q.match(/тренд|динамика|2021|2022|2023|история.*3.*год|год-к-году|5 лет/)) {
+    return { layer: 'cold' };
+  }
+  
+  // 🔄 MIX: если пользователь хочет всё
+  if (q.match(/все данные|полный анализ|максимум/)) {
+    return { layer: 'all' };
+  }
+  
+  // По умолчанию — hot (последние 30 дней)
+  return { layer: 'hot', days: 30 };
 }
-
 // ============================================
 //  LAYERED AI REQUEST
 // ============================================
