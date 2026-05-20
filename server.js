@@ -1,9 +1,9 @@
 // ============================================
-// Vega CRM Analytics Bot v2.0
+// Vega CRM Analytics Bot v2.2
 // AI Assistant for Hotel Business Analytics
 // Bot: @Vega_CRM_Analytics_bot
 // ============================================
-console.log('🚀 [INIT] Запуск Vega CRM Analytics Bot...');
+console.log('🚀 [INIT] Запуск Vega CRM Analytics Bot v2.2...');
 
 const express = require('express');
 const { Telegraf } = require('telegraf');
@@ -12,36 +12,19 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 🔑 Конфигурация
+// 🔑 Конфигурация из переменных окружения
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const QWEN_KEY = process.env.QWEN_API_KEY;
+const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://ws-l60ae5307m8kjrb3.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-plus';
 const B24_WEBHOOK = process.env.B24_WEBHOOK_URL;
 
 if (!BOT_TOKEN || !QWEN_KEY || !B24_WEBHOOK) {
   console.error('❌ [FATAL] Отсутствуют необходимые переменные окружения');
   process.exit(1);
 }
-// ============================================
-// 🏥 Health Check Endpoints (для VibeCode)
-// ============================================
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    service: 'Vega CRM Analytics Bot',
-    bot: '@Vega_CRM_Analytics_bot',
-    timestamp: new Date().toISOString()
-  });
-});
 
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    healthy: true,
-    uptime: process.uptime(),
-    memory: (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2) + ' MB'
-  });
-});
-// ============================================
-// 🤖 Инициализация бота
+// 🤖 Инициализация бота (Polling режим)
 const bot = new Telegraf(BOT_TOKEN);
 
 // ============================================
@@ -49,6 +32,8 @@ const bot = new Telegraf(BOT_TOKEN);
 // ============================================
 async function fetchCRMData() {
   try {
+    console.log('📡 [B24] Запрос данных из CRM...');
+    
     const url = `${B24_WEBHOOK}crm.deal.list.json`;
     const payload = {
       order: { DATE_CREATE: "DESC" },
@@ -61,10 +46,12 @@ async function fetchCRMData() {
       start: 0
     };
     
-    const response = await axios.post(url, payload);
-    return response.data.result || [];
+    const response = await axios.post(url, payload, { timeout: 15000 });
+    const deals = response.data.result || [];
+    console.log(`✅ [B24] Получено ${deals.length} сделок`);
+    return deals;
   } catch (err) {
-    console.error('💥 [B24 API] Ошибка:', err.response?.data || err.message);
+    console.error('💥 [B24 API] Ошибка:', err.message);
     return [];
   }
 }
@@ -83,37 +70,57 @@ async function askAI(userQuestion, crmData) {
 4. Форматируй ответ с эмодзи и списками для Telegram
 5. Делай акцент на метриках: количество сделок, суммы, конверсия, менеджеры`;
 
-  const contextStr = JSON.stringify(crmData).substring(0, 15000);
+  const contextStr = JSON.stringify(crmData).substring(0, 12000);
   const userPrompt = `Вопрос: "${userQuestion}"\n\nДанные из CRM (последние 50 сделок):\n${contextStr}`;
 
   try {
+    console.log('🔄 [Qwen] Отправка запроса к AI...');
+    
     const response = await axios.post(
-      'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
+      `${QWEN_BASE_URL}/chat/completions`,
       {
-        model: 'qwen-plus',
-        input: {
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ]
-        }
+        model: QWEN_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: 2000,
+        temperature: 0.7,
+        stream: false
       },
       {
         headers: {
           'Authorization': `Bearer ${QWEN_KEY}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 30000
       }
     );
-    return response.data.output.text;
+    
+    console.log('✅ [Qwen] Ответ получен');
+    return response.data.choices[0].message.content;
+    
   } catch (err) {
     console.error('💥 [Qwen AI] Ошибка:', err.message);
-    return '❌ Произошла ошибка при подключении к AI. Попробуйте позже.';
+    console.error('💥 [Qwen] Status:', err.response?.status);
+    console.error('💥 [Qwen] Data:', JSON.stringify(err.response?.data));
+    
+    let errorMsg = '❌ Ошибка подключения к AI.\n\n';
+    if (err.response?.status === 401) {
+      errorMsg += '🔑 Неверный API ключ Qwen';
+    } else if (err.response?.status === 429) {
+      errorMsg += '⏱️ Превышен лимит запросов';
+    } else if (err.response?.status === 400) {
+      errorMsg += '📝 Ошибка формата запроса';
+    } else {
+      errorMsg += 'Попробуйте позже.\nДетали: ' + err.message;
+    }
+    return errorMsg;
   }
 }
 
 // ============================================
-//  Обработчики Telegram
+// 🤖 Обработчики Telegram
 // ============================================
 bot.start((ctx) => ctx.reply(
   '*👋 Привет! Я AI-аналитик Vega CRM*\n\n' +
@@ -122,8 +129,7 @@ bot.start((ctx) => ctx.reply(
   '• "Какая воронка приносит больше денег?"\n' +
   '• "Топ-3 менеджера по сумме сделок"\n' +
   '• "Сколько новых сделок за сегодня?"\n' +
-  '• "Какие источники лидов самые эффективные?"\n' +
-  '• "Покажи общую статистику по сделкам"',
+  '• "Какие источники лидов самые эффективные?"',
   { parse_mode: 'Markdown' }
 ));
 
@@ -133,17 +139,12 @@ bot.on('text', async (ctx) => {
   
   await ctx.reply('⏳ Загружаю свежие данные из CRM и анализирую через Qwen AI...');
   
-  // 1. Забираем данные из Битрикс24
   const deals = await fetchCRMData();
-  
   if (deals.length === 0) {
     return ctx.reply('⚠️ Не удалось получить данные из CRM или в системе пока нет сделок.');
   }
   
-  // 2. Отправляем данные + вопрос в Qwen
   const aiAnswer = await askAI(query, deals);
-  
-  // 3. Отдаем ответ пользователю
   await ctx.reply(aiAnswer);
   console.log('✅ [AI] Ответ отправлен');
 });
@@ -153,6 +154,7 @@ bot.launch();
 app.listen(PORT, () => {
   console.log(`✅ [SERVER] Vega CRM Analytics Bot запущен на порту ${PORT}`);
   console.log(`🤖 Telegram: @Vega_CRM_Analytics_bot`);
+  console.log(`🧠 Qwen: ${QWEN_BASE_URL}`);
   console.log(` CRM: ${B24_WEBHOOK}`);
 });
 
