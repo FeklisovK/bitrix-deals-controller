@@ -1,193 +1,158 @@
 // ============================================
-// Vega CRM Analytics Bot v4.0
-// Features: Anti-Sleep, Smart Models, Optimized Payload
+// Vega CRM Analytics Bot v5.0
+// Architecture: 3-Layer Data (Hot/Warm/Cold)
 // ============================================
-console.log('🚀 [INIT] Запуск Vega CRM Analytics Bot v4.0...');
+console.log(' [INIT] Vega CRM Analytics Bot v5.0...');
 
 const express = require('express');
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const DATA_DIR = path.join(__dirname, 'data'); // Папка с вашими файлами
 
-// 🔑 Конфигурация
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const QWEN_KEY = process.env.QWEN_API_KEY;
 const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://ws-l60ae5307m8kjrb3.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
 const B24_WEBHOOK = process.env.B24_WEBHOOK_URL;
 
-// 🗺 Карта воронок
-const PIPELINES = {
-  '17': 'Индивидуалы',
-  '2': 'Группы',
-  '4': 'Мероприятия'
-};
+const PIPELINES = { '17': 'Индивидуалы', '2': 'Группы', '4': 'Мероприятия' };
 
 if (!BOT_TOKEN || !QWEN_KEY || !B24_WEBHOOK) {
-  console.error('❌ [FATAL] Missing ENV vars');
-  process.exit(1);
+  console.error('❌ [FATAL] Missing ENV vars'); process.exit(1);
 }
 
-// 🤖 Bot Init
 const bot = new Telegraf(BOT_TOKEN);
 
 // ============================================
-// 🛡️ ANTI-SLEEP: Keep-Alive Mechanism
+// 🛡️ ANTI-SLEEP (Keep-Alive)
 // ============================================
-// Серверы Black Hole засыпают через 1 час. Пингуем себя каждые 40 мин.
 if (process.env.KEEP_ALIVE !== 'false') {
-  const KEEP_ALIVE_INTERVAL = 40 * 60 * 1000; // 40 минут
-  
   setInterval(async () => {
-    try {
-      await axios.get(`http://localhost:${PORT}/health`);
-      console.log('💓 [KEEP-ALIVE] Server awake');
-    } catch (err) {
-      console.error('⚠️ [KEEP-ALIVE] Ping failed', err.message);
-    }
-  }, KEEP_ALIVE_INTERVAL);
-  
-  console.log(`💤 [CONFIG] Anti-sleep enabled (ping every ${KEEP_ALIVE_INTERVAL/1000}s)`);
+    try { await axios.get(`http://localhost:${PORT}/health`); } catch {}
+  }, 40 * 60 * 1000); // Пинг каждые 40 мин
 }
 
 // ============================================
-// 📥 Fetch Data (Optimized)
+// 📦 DATA LAYERS
 // ============================================
-async function fetchCRMData({ dateFrom = null, limit = 300, categoryId = null } = {}) {
+async function fetchHotData(days = 30) {
   try {
-    console.log(` [B24] Fetching (limit: ${limit})...`);
+    const dateFrom = new Date(Date.now() - days*86400000).toISOString().split('T')[0];
     const url = `${B24_WEBHOOK}crm.deal.list.json`;
-    const filter = {};
-    if (dateFrom) filter['>=DATE_CREATE'] = dateFrom;
-    if (categoryId) filter['CATEGORY_ID'] = categoryId;
-    
-    let allDeals = [];
-    let start = 0;
-    
-    while (allDeals.length < limit) {
-      const response = await axios.post(url, {
-        order: { DATE_CREATE: "DESC" },
-        filter,
-        select: ["ID", "TITLE", "OPPORTUNITY", "STAGE_ID", "CATEGORY_ID", "ASSIGNED_BY_ID", "DATE_CREATE", "CLOSED"],
-        start
+    let all = [], start = 0;
+    while (true) {
+      const res = await axios.post(url, {
+        order: { DATE_CREATE: 'DESC' }, filter: { '>=DATE_CREATE': dateFrom },
+        select: ['ID','TITLE','OPPORTUNITY','STAGE_ID','CATEGORY_ID','ASSIGNED_BY_ID','DATE_CREATE','CLOSED'], start
       }, { timeout: 15000 });
-      
-      const deals = response.data.result || [];
-      if (deals.length === 0) break;
-      
-      // ⚡ OPTIMIZATION: Map to minimal structure immediately
-      const mapped = deals.map(d => ({
-        id: d.ID,
-        t: d.TITLE,            // Title
-        a: parseFloat(d.OPPORTUNITY) || 0, // Amount
-        s: d.STAGE_ID,         // Stage
-        p: d.CATEGORY_ID,      // Pipeline ID
-        m: d.ASSIGNED_BY_ID,   // Manager
-        d: d.DATE_CREATE,      // Date
-        c: d.CLOSED            // Closed status
-      }));
-      
-      allDeals = allDeals.concat(mapped);
+      const deals = res.data.result || [];
+      if (!deals.length) break;
+      all = all.concat(deals.map(d => ({
+        id:d.ID, t:(d.TITLE||'').slice(0,50), a:+d.OPPORTUNITY||0, s:d.STAGE_ID,
+        p:d.CATEGORY_ID, m:d.ASSIGNED_BY_ID, d:d.DATE_CREATE, c:d.CLOSED
+      })));
       start += 50;
       if (deals.length < 50) break;
-      await new Promise(r => setTimeout(r, 200));
     }
-    
-    console.log(`✅ [B24] Fetched ${allDeals.length} deals`);
-    return allDeals;
-  } catch (err) {
-    console.error('💥 [B24] Error:', err.message);
-    return [];
-  }
+    return all;
+  } catch (e) { return []; }
+}
+
+async function loadWarmData() {
+  try {
+    const buf = fs.readFileSync(path.join(DATA_DIR, 'history-2024-2025.json.gz'));
+    return JSON.parse(zlib.gunzipSync(buf).toString());
+  } catch { return []; }
+}
+
+async function loadColdData(years = ['2021','2022','2023','2024','2025']) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'aggregates-2021-2025.json'), 'utf8'));
+    const res = {};
+    years.forEach(y => { if (raw[y]) res[y] = raw[y]; });
+    return res;
+  } catch { return {}; }
 }
 
 // ============================================
-// 🧠 Smart AI Request
+// 🧭 ROUTER (Умный выбор слоя данных)
 // ============================================
-async function askAI(query, deals, context = {}) {
-  // 🧠 SMART MODEL SELECTION
-  // Используем qwen-turbo для простых вопросов, qwen-plus для аналитики
-  const isComplex = query.length > 50 || 
-                    query.match(/статистик|анализ|прогноз|топ|конверс|деньг|сумм|менеджер/i);
-  
-  const model = isComplex ? 'qwen-plus' : 'qwen-turbo';
-  console.log(`🤖 [AI] Model: ${model} (Complex: ${isComplex})`);
+function routeQuery(query) {
+  const q = query.toLowerCase();
+  if (q.match(/сегодня|вчера|недел|3 дня|последн.*день/)) return { layer: 'hot', days: 7 };
+  if (q.match(/месяц|квартал|2024|2025|сравн.*год|полгода/)) return { layer: 'warm' };
+  if (q.match(/тренд|динамика|2021|2022|2023|история|5 лет|год-к-году/)) return { layer: 'cold' };
+  if (q.match(/все данные|полный анализ|максимум/)) return { layer: 'all' };
+  return { layer: 'hot', days: 30 }; // По умолчанию
+}
 
-  // ⚡ PAYLOAD OPTIMIZATION
-  // Отправляем только компактный JSON, обрезая лишнее
-  let dataStr = JSON.stringify(deals);
-  if (dataStr.length > 10000) {
-    console.log('️ [AI] Data too large, truncating...');
-    // Берем только первые N сделок если данных слишком много
-    dataStr = JSON.stringify(deals.slice(0, 100)); 
+// ============================================
+//  LAYERED AI REQUEST
+// ============================================
+async function askAI(query, layers) {
+  // Выбор модели: Turbo для простых, Plus для аналитики
+  const isComplex = query.length > 40 || query.match(/статистик|анализ|прогноз|топ|конверс|сумм|менеджер|тренд/i);
+  const model = isComplex ? 'qwen-plus' : 'qwen-turbo';
+  
+  let context = '';
+  if (layers.cold && Object.keys(layers.cold).length > 0) {
+    context += `📊 COLD (Агрегаты 2021-2025):\n${JSON.stringify(layers.cold).slice(0, 6000)}\n\n`;
+  }
+  if (layers.warm && layers.warm.length > 0) {
+    context += `🌤 WARM (Детали 2024-2025, выборка):\n${JSON.stringify(layers.warm.slice(0, 80)).slice(0, 5000)}\n\n`;
+  }
+  if (layers.hot && layers.hot.length > 0) {
+    context += `🔥 HOT (Последние 30 дней):\n${JSON.stringify(layers.hot.slice(0, 50)).slice(0, 4000)}\n`;
   }
 
-  const systemPrompt = `Ты — AI-аналитик CRM отеля Vega.
-Воронки: Индивидуалы(17), Группы(2), Мероприятия(4).
-Отвечай кратко, по делу, на русском. Используй Markdown.`;
-
-  const userPrompt = `Вопрос: "${query}"\nДанные (${deals.length} сделок):\n${dataStr}`;
+  const system = `Ты — AI-аналитик CRM отеля Vega.
+Воронки: 17=Индивидуалы, 2=Группы, 4=Мероприятия.
+Данные разделены на слои: COLD (агрегаты), WARM (детали 24-25), HOT (свежие).
+Отвечай кратко, на русском, с эмодзи и Markdown.`;
 
   try {
-    const response = await axios.post(
-      `${QWEN_BASE_URL}/chat/completions`,
-      {
-        model: model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        max_tokens: 1500,
-        temperature: 0.7
-      },
-      {
-        headers: { 'Authorization': `Bearer ${QWEN_KEY}`, 'Content-Type': 'application/json' },
-        timeout: 60000 // 60 сек
-      }
-    );
-    return response.data.choices[0].message.content;
-  } catch (err) {
-    console.error('💥 [AI] Error:', err.message);
+    const res = await axios.post(`${QWEN_BASE_URL}/chat/completions`, {
+      model, messages: [{role:'system', content:system}, {role:'user', content:`Вопрос: "${query}"\n\n${context}`}],
+      max_tokens: 1500, temperature: 0.7
+    }, { headers: { 'Authorization': `Bearer ${QWEN_KEY}`, 'Content-Type': 'application/json' }, timeout: 60000 });
+    return res.data.choices[0].message.content;
+  } catch (e) {
     return '❌ Ошибка AI. Попробуйте позже.';
   }
 }
 
 // ============================================
-// 📡 Endpoints & Handlers
+// 📡 HANDLERS
 // ============================================
-app.get('/', (req, res) => res.json({ status: 'ok', version: '4.0' }));
+app.get('/', (req, res) => res.json({ status: 'ok', v: '5.0' }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime() }));
 
-bot.start((ctx) => ctx.reply(
-  '*👋 Привет! Я AI-аналитик Vega CRM v4.0*\n\n' +
-  'Воронки:\n• 🏨 Индивидуалы\n• 👥 Группы\n• 🎉 Мероприятия\n\n' +
-  'Спросите: "Статистика", "Топ сделок", "Анализ групп"',
+bot.start(ctx => ctx.reply(
+  `*👋 Vega CRM Bot v5.0*\n\n Слои данных:\n• 🔥 Hot: последние 30 дней\n• 🌤 Warm: 2024-2025 (детали)\n• ❄️ Cold: 2021-2025 (агрегаты)\n\nПримеры:\n"Статистика за 2024"\n"Тренд по группам 5 лет"\n"Топ сделок сегодня"`,
   { parse_mode: 'Markdown' }
 ));
 
-bot.on('text', async (ctx) => {
+bot.on('text', async ctx => {
   const query = ctx.message.text.trim();
+  if (process.uptime() < 60) await ctx.reply('🔋 Сервер просыпается... ⏳');
+  else await ctx.reply('⏳ Анализирую данные...');
+
+  const route = routeQuery(query);
+  const layers = {};
   
-  // ⚠️ SLEEP CHECK: Если сервер только проснулся
-  if (process.uptime() < 60) {
-    await ctx.reply(' Сервер только проснулся... Загрузка данных может занять чуть больше времени. ⏳');
-  } else {
-    await ctx.reply(' Анализирую данные...');
-  }
+  if (route.layer === 'hot' || route.layer === 'all') layers.hot = await fetchHotData(route.days || 30);
+  if (route.layer === 'warm' || route.layer === 'all') layers.warm = await loadWarmData();
+  if (route.layer === 'cold' || route.layer === 'all') layers.cold = await loadColdData();
 
-  // Parsing logic (simplified for v4.0)
-  let categoryId = null;
-  if (query.toLowerCase().includes('групп')) categoryId = '2';
-  else if (query.toLowerCase().includes('мероприят')) categoryId = '4';
-  else if (query.toLowerCase().includes('индивидуал')) categoryId = '17';
-
-  const deals = await fetchCRMData({ limit: 300, categoryId });
-  if (deals.length === 0) return ctx.reply('⚠️ Нет данных.');
-
-  const answer = await askAI(query, deals);
+  const answer = await askAI(query, layers);
   await ctx.reply(answer, { parse_mode: 'Markdown' });
 });
 
 bot.launch();
-app.listen(PORT, () => console.log(`✅ Server v4.0 running on :${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server v5.0 running :${PORT}`));
+process.on('uncaughtException', () => process.exit(1));
